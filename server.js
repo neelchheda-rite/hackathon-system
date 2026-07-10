@@ -83,6 +83,17 @@ app.post('/api/login', (req, res) => {
 app.post('/api/logout', (req, res) => { audit(req, 'logout', 'signed out'); req.session.destroy(() => res.json({ ok: true })); });
 app.get('/api/me', (req, res) => res.json(req.session.user || null));
 
+// ---------- ENV DOWNLOAD (any logged-in user) ----------
+// Serves the shared backend .env so teams can drop it into their own repos.
+// Login-gated: the file lives outside public/ and is never statically served.
+app.get('/api/download/env', requireAuth, (req, res) => {
+  const envPath = path.join(__dirname, '.env');
+  audit(req, 'download_env', `${req.session.user.name} downloaded the shared .env`);
+  res.download(envPath, '.env', (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: '.env not found on server' });
+  });
+});
+
 // ---------- SHARED DATA ----------
 function assignmentView() {
   return db.prepare(`

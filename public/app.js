@@ -226,6 +226,7 @@ async function renderShell() {
         <button class="btn sm ghost notif-bell" id="notif-bell" title="Notifications">🔔<span class="notif-dot" id="notif-dot" hidden></span></button>
         <div class="notif-panel" id="notif-panel" hidden></div>
       </div>
+      <button class="btn sm ghost" id="dl-env" title="Download the shared backend .env">⬇ .env</button>
       <button class="btn sm ghost" id="logout">Logout</button>
     </div>
     <div class="container">
@@ -233,6 +234,7 @@ async function renderShell() {
         `<div class="tab ${t === TAB ? 'active' : ''}" data-t="${t}">${TAB_NAMES[t]}</div>`).join('')}</div>
       <div id="view"></div>
     </div>`;
+  $('#dl-env').onclick = () => { window.location.href = '/api/download/env'; toast('Downloading .env…'); };
   $('#logout').onclick = async () => { await api('/api/logout', 'POST'); ME = null; saveSession(null); renderLogin(); };
   document.querySelectorAll('.tab').forEach(el => el.onclick = () => { TAB = el.dataset.t; renderShell(); });
   setupNotifications();

@@ -29,11 +29,11 @@ CREATE TABLE IF NOT EXISTS epics (
   description TEXT
 );
 
--- An assignment = a team picked (a chit for) an epic in a given round
+-- An assignment = a team picked (a chit for) an epic; round is derived from the epic on assignment
 CREATE TABLE IF NOT EXISTS assignments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   team_id INTEGER NOT NULL,
-  round INTEGER NOT NULL,
+  round INTEGER,                  -- nullable: unknown until an epic is assigned (round follows the epic)
   epic_id INTEGER,                -- assigned by org after chit pickup (nullable until assigned)
   status TEXT NOT NULL DEFAULT 'picked',
   -- picked -> in_development -> ready_review -> acceptance -> pr_review -> ui_review -> merged -> integration -> done
@@ -80,6 +80,33 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at TEXT DEFAULT (datetime('now'))
 );
 `);
+
+// ---- Migration: relax assignments.round to nullable (round now follows the epic) ----
+// Older DBs were created with `round INTEGER NOT NULL`; a chit pickup no longer knows
+// the round up front, so rebuild the table if the column is still NOT NULL.
+const roundCol = db.prepare(`SELECT "notnull" FROM pragma_table_info('assignments') WHERE name='round'`).get();
+if (roundCol && roundCol.notnull === 1) {
+  db.exec(`
+    PRAGMA foreign_keys=off;
+    BEGIN TRANSACTION;
+    CREATE TABLE assignments_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      round INTEGER,
+      epic_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'picked',
+      pr_link TEXT,
+      attempts INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    INSERT INTO assignments_new (id,team_id,round,epic_id,status,pr_link,attempts,created_at)
+      SELECT id,team_id,round,epic_id,status,pr_link,attempts,created_at FROM assignments;
+    DROP TABLE assignments;
+    ALTER TABLE assignments_new RENAME TO assignments;
+    COMMIT;
+    PRAGMA foreign_keys=on;
+  `);
+}
 
 // ---- Seed once from config.js ----
 const seeded = db.prepare('SELECT COUNT(*) c FROM users').get().c;

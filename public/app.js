@@ -573,7 +573,6 @@ async function renderAdmin(v) {
         <h3>① Register a chit pickup</h3>
         <div class="sub">Team lead picked a chit — log it, then assign the epic number below.</div>
         <div class="field"><label>Team</label><select id="pk-team">${STATE.teams.map(t => `<option value="${t.id}">${t.name}</option>`).join('')}</select></div>
-        <div class="field"><label>Round</label><select id="pk-round">${[1,2,3,4].map(r => `<option>${r}</option>`).join('')}</select></div>
         <button class="btn" onclick="doPickup()">Register pickup</button>
       </div>
       <div class="card">
@@ -581,7 +580,7 @@ async function renderAdmin(v) {
         <div class="sub">Pick a waiting assignment and the epic drawn from the chit.</div>
         <div class="field"><label>Waiting assignment</label><select id="as-assign">${
           STATE.assignments.filter(a => a.status === 'picked').map(a =>
-          `<option value="${a.id}">${a.team_name} · Round ${a.round}</option>`).join('') || '<option value="">— none —</option>'}</select></div>
+          `<option value="${a.id}">${a.team_name}</option>`).join('') || '<option value="">— none —</option>'}</select></div>
         <div class="field"><label>Epic</label><select id="as-epic">${
           STATE.epics.map(e => `<option value="${e.id}">${e.epic_number} — ${e.title}</option>`).join('')}</select></div>
         <button class="btn ok" onclick="doAssign()">Assign & start development</button>
@@ -639,7 +638,7 @@ function renderEpicEditor() {
     </tr>`).join('')}</tbody></table>`;
 }
 async function doPickup() {
-  await api('/api/admin/pickup', 'POST', { team_id: +$('#pk-team').value, round: +$('#pk-round').value });
+  await api('/api/admin/pickup', 'POST', { team_id: +$('#pk-team').value });
   toast('Pickup registered'); await loadState(); renderView();
 }
 async function doAssign() {

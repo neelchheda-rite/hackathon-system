@@ -89,7 +89,9 @@ app.get('/api/me', (req, res) => res.json(req.session.user || null));
 app.get('/api/download/env', requireAuth, (req, res) => {
   const envPath = path.join(__dirname, '.env');
   audit(req, 'download_env', `${req.session.user.name} downloaded the shared .env`);
-  res.download(envPath, '.env', (err) => {
+  // res.download uses sendFile, whose dotfiles option defaults to "ignore" —
+  // that silently 404s any file starting with "." (e.g. .env). Allow it explicitly.
+  res.download(envPath, '.env', { dotfiles: 'allow' }, (err) => {
     if (err && !res.headersSent) res.status(404).json({ error: '.env not found on server' });
   });
 });
@@ -164,21 +166,21 @@ app.put('/api/admin/epics/:id', requireRole('admin'), (req, res) => {
 // Org assigns the picked epic number to a team's assignment (after chit pickup)
 app.post('/api/admin/assign-epic', requireRole('admin'), (req, res) => {
   const { assignment_id, epic_id } = req.body;
-  db.prepare('UPDATE assignments SET epic_id=?, status=? WHERE id=?')
-    .run(epic_id, 'in_development', assignment_id);
-  const ep = db.prepare('SELECT epic_number FROM epics WHERE id=?').get(epic_id);
+  const ep = db.prepare('SELECT epic_number, round FROM epics WHERE id=?').get(epic_id);
+  db.prepare('UPDATE assignments SET epic_id=?, round=?, status=? WHERE id=?')
+    .run(epic_id, ep ? ep.round : null, 'in_development', assignment_id);
   audit(req, 'assign_epic', `assigned ${ep ? ep.epic_number : epic_id} to assignment #${assignment_id}`);
   notifyTeamLead(assignment_id, 'assigned',
     `${assignmentLabel(assignment_id)} was assigned — development can start.`);
   res.json({ ok: true });
 });
-// Org confirms a chit pickup: creates the assignment row for a team+round
+// Org confirms a chit pickup: creates the assignment row for a team (round set when epic is assigned)
 app.post('/api/admin/pickup', requireRole('admin'), (req, res) => {
-  const { team_id, round } = req.body;
-  const r = db.prepare('INSERT INTO assignments (team_id,round,status) VALUES (?,?,?)')
-    .run(team_id, round, 'picked');
+  const { team_id } = req.body;
+  const r = db.prepare('INSERT INTO assignments (team_id,status) VALUES (?,?)')
+    .run(team_id, 'picked');
   const tm = db.prepare('SELECT name FROM teams WHERE id=?').get(team_id);
-  audit(req, 'register_pickup', `${tm ? tm.name : team_id} picked a chit for Round ${round}`);
+  audit(req, 'register_pickup', `${tm ? tm.name : team_id} picked a chit`);
   res.json({ id: r.lastInsertRowid });
 });
 

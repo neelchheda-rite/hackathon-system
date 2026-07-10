@@ -431,10 +431,9 @@ function renderMyEpics(v) {
     <div class="section-title">Your team's work in flight</div>
     <div class="grid">${mine.map((x, i) => `
     <div class="card fade-up" style="animation-delay:${Math.min(i, 8) * 80}ms">
-      <div class="row" style="justify-content:space-between"><h3>${x.gh_title || x.epic_title || x.epic_number || 'Epic pending'}</h3>${badge(x.status)}</div>
+      <div class="row" style="justify-content:space-between"><h3>${x.epic_title || x.epic_number || 'Epic pending'}</h3>${badge(x.status)}</div>
       <div class="sub">${x.epic_number ? x.epic_number + ' · ' : ''}Round ${x.round} ${x.attempts > 1 ? `<span class="attempts">· attempt ${x.attempts}</span>` : ''}</div>
       ${pipe(x.status)}
-      ${x.gh_url ? `<div class="sub" style="margin-top:6px">📋 <a href="${x.gh_url}" target="_blank" rel="noopener">View epic on GitHub board →</a></div>` : ''}
       ${(x.status === 'in_development') ? `
         <div class="field" style="margin-top:8px"><label>PR link</label><input id="pr-${x.id}" placeholder="https://github.com/..."></div>
         <button class="btn ok" onclick="submitPR(${x.id})">Mark completed & submit PR</button>` : ''}
@@ -610,33 +609,9 @@ async function renderAdmin(v) {
       </tr>`).join('')}
     </tbody></table></div>
 
-    <div class="section-title" style="margin-top:28px">GitHub board</div>
-    <div class="sub" style="color:var(--ink-soft);margin-bottom:12px">Epic cards pull their title & link from the repo milestones (EP-0NN → milestone #NN). Cached and refreshed automatically; sync now to pick up changes immediately.</div>
-    <div class="boxed row" style="justify-content:space-between;align-items:center">
-      <div id="gh-status" class="sub">Checking…</div>
-      <button class="btn sm" onclick="syncGithub()">Sync from GitHub</button>
-    </div>
-
     <div class="section-title" style="margin-top:28px">Master epic list (28)</div>
     <div id="epic-editor"></div>`;
   renderEpicEditor();
-  loadGithubStatus();
-}
-function renderGithubStatus(st) {
-  const el = $('#gh-status'); if (!el) return;
-  if (!st || !st.enabled) { el.innerHTML = '⚠️ GitHub not configured — set <b>GITHUB_TOKEN</b> in .env to enable epic links.'; return; }
-  if (st.error) { el.innerHTML = `⚠️ Last sync failed: ${String(st.error).replace(/</g, '&lt;')}`; return; }
-  const when = st.lastSync ? new Date(st.lastSync).toLocaleTimeString() : '—';
-  el.innerHTML = `✅ ${st.count} milestones synced from <b>${st.owner}/${st.repo}</b> · last ${when}`;
-}
-async function loadGithubStatus() {
-  try { renderGithubStatus(await api('/api/admin/github')); } catch (e) { /* non-admin or offline */ }
-}
-async function syncGithub() {
-  const st = await api('/api/admin/github/sync', 'POST', {});
-  renderGithubStatus(st);
-  toast(st.error ? 'Sync failed' : `Synced ${st.count} milestones`);
-  await loadState(); renderView();
 }
 async function saveTeam(id) {
   const name = $('#tm-' + id).value.trim();

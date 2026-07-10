@@ -4,7 +4,6 @@ const session = require('express-session');
 const path = require('path');
 const db = require('./db');
 const config = require('./config');
-const github = require('./github');
 
 const app = express();
 app.use(express.json());
@@ -110,37 +109,14 @@ function assignmentView() {
   `).all();
 }
 
-// Decorate any row that has an `epic_number` with its GitHub milestone details:
-//   gh_title  — the milestone title (e.g. "Epic 28: System Integration Final Readiness")
-//   gh_url    — link to the milestone on GitHub
-// Rows with no epic yet (or no GitHub match) are returned unchanged.
-function withGithub(rows) {
-  const arr = Array.isArray(rows) ? rows : [rows];
-  for (const r of arr) {
-    if (!r || !r.epic_number) continue;
-    const gh = github.forEpic(r.epic_number);
-    if (gh) { r.gh_title = gh.title; r.gh_url = gh.url; }
-  }
-  return rows;
-}
-
 app.get('/api/teams', requireAuth, (req, res) => res.json(db.prepare('SELECT * FROM teams ORDER BY name').all()));
 app.get('/api/epics', requireAuth, (req, res) => {
-  github.ensureFresh();
-  res.json(withGithub(db.prepare('SELECT * FROM epics ORDER BY round, epic_number').all()));
+  res.json(db.prepare('SELECT * FROM epics ORDER BY round, epic_number').all());
 });
 app.get('/api/assignments', requireAuth, (req, res) => {
-  github.ensureFresh();
-  res.json(withGithub(assignmentView()));
+  res.json(assignmentView());
 });
 
-// Admin: GitHub sync status + manual refresh (button in the Organizer panel)
-app.get('/api/admin/github', requireRole('admin'), (req, res) => res.json(github.status()));
-app.post('/api/admin/github/sync', requireRole('admin'), async (req, res) => {
-  const st = await github.refresh();
-  audit(req, 'github_sync', `synced milestones (${st.count} found${st.error ? ', error: ' + st.error : ''})`);
-  res.json(st);
-});
 app.get('/api/reviews/:aid', requireAuth, (req, res) => {
   res.json(db.prepare(`
     SELECT r.*, u.name AS reviewer_name FROM reviews r
@@ -412,10 +388,4 @@ app.get('/api/admin/team-report/:teamId', requireRole('admin'), (req, res) => {
 const PORT = process.env.PORT || config.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Hackathon system running on http://0.0.0.0:${PORT}`);
-  // Warm the GitHub milestone cache at startup (best-effort; logs the outcome).
-  github.refresh().then((st) => {
-    if (!st.enabled) console.log('GitHub: disabled (set GITHUB_TOKEN to enable milestone links).');
-    else if (st.error) console.warn('GitHub: sync error —', st.error);
-    else console.log(`GitHub: synced ${st.count} milestones.`);
-  });
 });

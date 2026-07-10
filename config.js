@@ -19,13 +19,13 @@ const USERS = [
   { username: 'rite', password: 'rite2026', name: 'Rite Technologies', role: 'admin' },
 
   // ---- Team Leads (one per team) ----
-  { username: 'heth', password: 'heth01', name: 'Heth Chheda', role: 'lead', team: 'Codastra' },
-  { username: 'nikhil', password: 'nikhil02', name: 'Nikhil Gavandi', role: 'lead', team: 'Promptastic Four' },
-  { username: 'pranit', password: 'pranit03', name: 'Pranit Khakal', role: 'lead', team: 'Nexus Four' },
-  { username: 'nidhi', password: 'nidhi04', name: 'Nidhi Bhatt', role: 'lead', team: 'Code Cartel' },
-  { username: 'satish', password: 'satish05', name: 'Satish Umathe', role: 'lead', team: 'Chakravyuh Breakers' },
-  { username: 'anushka', password: 'anushka06', name: 'Anushka Menon', role: 'lead', team: 'The Bug Hunters' },
-  { username: 'murtaza', password: 'murtaza07', name: 'Murtaza Baranwala', role: 'lead', team: 'ClauPilots' },
+  { username: 'heth', password: 'heth7305', name: 'Heth Chheda', role: 'lead', team: 'Codastra' },
+  { username: 'nikhil', password: 'nikhil6613', name: 'Nikhil Gavandi', role: 'lead', team: 'Promptastic Four' },
+  { username: 'pranit', password: 'pranit2341', name: 'Pranit Khakal', role: 'lead', team: 'Nexus Four' },
+  { username: 'nidhi', password: 'nidhi1362', name: 'Nidhi Bhatt', role: 'lead', team: 'Code Cartel' },
+  { username: 'satish', password: 'satish1635', name: 'Satish Umathe', role: 'lead', team: 'Chakravyuh Breakers' },
+  { username: 'anushka', password: 'anushka9779', name: 'Anushka Menon', role: 'lead', team: 'The Bug Hunters' },
+  { username: 'murtaza', password: 'murtaza9535', name: 'Murtaza Baranwala', role: 'lead', team: 'ClauPilots' },
 
   // ---- BAs (Acceptance Criteria review) — 2 ----
   { username: 'priti', password: 'priti11', name: 'Priti Mehta', role: 'ba' },

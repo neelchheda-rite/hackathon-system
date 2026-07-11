@@ -375,13 +375,14 @@ async function renderDashboard(v) {
       || `<tr><td colspan="${lifecycle.length + 1}" class="empty">No epics yet.</td></tr>`}</tbody></table>`;
 
   // --- Standings ---
-  const standings = `<table><thead><tr><th>#</th><th>Team</th><th>Acceptance ★</th><th>PR ★</th><th>UI ★</th><th>Total ★</th><th>Avg score</th><th>Done</th><th>Rejections</th><th></th></tr></thead>
+  const standings = `<table><thead><tr><th>#</th><th>Team</th><th>Acceptance ★</th><th>PR ★</th><th>UI ★</th><th>Bonus ★</th><th>Total ★</th><th>Avg score</th><th>Done</th><th>Rejections</th><th></th></tr></thead>
     <tbody>${lb.map((r, i) => {
       const team = STATE.teams.find(t => t.name === r.team);
       return `<tr>
         <td><span class="rank ${i === 0 ? '' : 'low'}">${i + 1}</span></td><td><b>${r.team}</b></td>
         <td style="color:var(--star)">${r.acceptance_stars}</td><td style="color:var(--star)">${r.pr_stars}</td><td style="color:var(--star)">${r.ui_stars}</td>
-        <td>${r.total}</td><td class="big" style="color:var(--star)">${r.avg_score}</td>
+        <td style="color:${r.bonus_stars ? 'var(--success)' : 'var(--muted)'}">${r.bonus_stars ? '+' + r.bonus_stars : '—'}</td>
+        <td><b>${r.total}</b></td><td class="big" style="color:var(--star)">${r.avg_score}</td>
         <td>${r.epics_done}</td>
         <td style="color:${r.rejections ? 'var(--fail)' : 'var(--muted)'}">${r.rejections}</td>
         <td>${team ? `<button class="btn sm ghost" onclick="openTeamReport(${team.id})">Report</button>` : ''}</td>

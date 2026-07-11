@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 -- Bonus points awarded to a team for meeting predefined criteria (e.g.
 -- multilingual support, N/4 platforms completed). Editable per team: one row
--- per (team, criterion). `stars` is the weighted point value actually awarded;
+-- per (team, criterion). stars is the weighted point value actually awarded;
 -- it defaults from the criterion's suggested weight but the organizer can tune it.
 CREATE TABLE IF NOT EXISTS bonuses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

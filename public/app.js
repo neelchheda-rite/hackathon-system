@@ -320,11 +320,12 @@ async function renderLeaderboard(v) {
   v.innerHTML = `<div class="page-title">Leaderboard</div>
     <div class="section-title">Final average score across all reviews (Acceptance + PR + UI)</div>
     <table><thead><tr><th>#</th><th>Team</th><th>Acceptance ★</th><th>PR ★</th><th>UI ★</th>
-    <th>Total ★</th><th>Avg score</th><th>Epics Done</th><th>Rejections</th></tr></thead><tbody>
+    <th>Bonus ★</th><th>Total ★</th><th>Avg score</th><th>Epics Done</th><th>Rejections</th></tr></thead><tbody>
     ${lb.map((r, i) => `<tr>
       <td><span class="rank ${i === 0 ? '' : 'low'}">${i + 1}</span></td><td><b>${r.team}</b></td>
       <td style="color:var(--star)">${r.acceptance_stars}</td><td style="color:var(--star)">${r.pr_stars}</td><td style="color:var(--star)">${r.ui_stars}</td>
-      <td>${r.total}</td><td class="big" style="color:var(--star)">${r.avg_score}</td><td>${r.epics_done}</td>
+      <td style="color:${r.bonus_stars ? 'var(--success)' : 'var(--muted)'}">${r.bonus_stars ? '+' + r.bonus_stars : '—'}</td>
+      <td><b>${r.total}</b></td><td class="big" style="color:var(--star)">${r.avg_score}</td><td>${r.epics_done}</td>
       <td style="color:${r.rejections ? 'var(--fail)' : 'var(--muted)'}">${r.rejections}</td>
     </tr>`).join('')}</tbody></table>`;
 }
@@ -521,10 +522,10 @@ function renderReviewQueue(v) {
         <div class="sub">${x.epic_desc || ''}</div>
         ${stageChips(x)}
         ${x.pr_link ? `<div class="sub">PR: <a href="${x.pr_link}" target="_blank">open PR</a></div>` : ''}
-        ${isAdmin
+        <div class="act-btns">${isAdmin
           ? REVIEW_STAGES.filter(s => stageOpen(x, s)).map(s =>
-              `<button class="btn sm" onclick="openReview(${x.id},'${s}')">Review: ${STAGE_TITLE[s]}</button>`).join(' ')
-          : `<button class="btn" onclick="openReview(${x.id},'${myStage}')">Review this epic</button>`}
+              `<button class="btn sm" onclick="openReview(${x.id},'${s}')">Review: ${STAGE_TITLE[s]}</button>`).join('')
+          : `<button class="btn block" onclick="openReview(${x.id},'${myStage}')">Review this epic</button>`}</div>
       </div>`).join('')}</div>`
       : `<div class="empty">🎉 Nothing in the queue right now.</div>`);
 }
@@ -668,9 +669,87 @@ async function renderAdmin(v) {
       </tr>`).join('')}
     </tbody></table></div>
 
+    <div class="section-title" style="margin-top:28px">Bonus points (team-wise)</div>
+    <div class="sub" style="color:var(--ink-soft);margin-bottom:12px">Award extra weighted points for predefined criteria. Awards are editable — award again to update, or remove.</div>
+    <div id="bonus-manager"></div>
+
     <div class="section-title" style="margin-top:28px">Master epic list (28)</div>
     <div id="epic-editor"></div>`;
+  renderBonusManager();
   renderEpicEditor();
+}
+
+// ---- Bonus points manager (Organizer) ----
+async function renderBonusManager() {
+  const el = $('#bonus-manager');
+  if (!el) return;
+  const [criteria, bonuses] = await Promise.all([
+    api('/api/bonus-criteria').catch(() => []),
+    api('/api/bonuses').catch(() => ({ byTeam: {}, totals: {} }))
+  ]);
+  BONUS_CRITERIA_CACHE = criteria;
+  const critOpts = criteria.map(c => `<option value="${c.key}">${c.label}</option>`).join('');
+  el.innerHTML = STATE.teams.map(t => {
+    const awarded = (bonuses.byTeam[t.id] || []);
+    const total = bonuses.totals[t.id] || 0;
+    const chips = awarded.map(b => `
+      <span class="bonus-chip" title="${(b.note || '').replace(/"/g, '&quot;')}">
+        ${b.label} <b>+${b.stars}★</b>
+        <button class="bonus-x" title="Remove" onclick="removeBonus(${t.id},'${b.criterion}')">×</button>
+      </span>`).join('') || `<span class="muted" style="color:var(--muted)">No bonuses yet.</span>`;
+    return `<div class="bonus-team boxed">
+      <div class="bonus-team-head">
+        <b>${t.name}</b>
+        <span class="bonus-total">Bonus total: <b>+${Math.round(total * 10) / 10}★</b></span>
+      </div>
+      <div class="bonus-chips">${chips}</div>
+      <div class="bonus-form">
+        <select id="bc-crit-${t.id}" onchange="onBonusCritChange(${t.id})">${critOpts}</select>
+        <input id="bc-units-${t.id}" type="number" min="1" placeholder="count" style="display:none">
+        <input id="bc-stars-${t.id}" type="number" min="0" step="0.5" placeholder="stars (auto)">
+        <input id="bc-note-${t.id}" type="text" placeholder="note (optional)">
+        <button class="btn sm ok" onclick="awardBonus(${t.id})">Award / Update</button>
+      </div>
+    </div>`;
+  }).join('');
+  STATE.teams.forEach(t => onBonusCritChange(t.id));
+}
+let BONUS_CRITERIA_CACHE = [];
+function onBonusCritChange(teamId) {
+  const key = $('#bc-crit-' + teamId).value;
+  const crit = BONUS_CRITERIA_CACHE.find(c => c.key === key);
+  const unitsEl = $('#bc-units-' + teamId);
+  const starsEl = $('#bc-stars-' + teamId);
+  if (crit && crit.type === 'scaled') {
+    unitsEl.style.display = '';
+    unitsEl.max = crit.maxUnits;
+    unitsEl.placeholder = `1-${crit.maxUnits} ${crit.unitLabel || ''}`.trim();
+    starsEl.placeholder = `auto (${crit.perUnit}/${crit.unitLabel || 'unit'})`;
+  } else {
+    unitsEl.style.display = 'none';
+    starsEl.placeholder = crit ? `auto (${crit.weight}★)` : 'stars';
+  }
+}
+async function awardBonus(teamId) {
+  const criterion = $('#bc-crit-' + teamId).value;
+  const unitsEl = $('#bc-units-' + teamId);
+  const stars = $('#bc-stars-' + teamId).value.trim();
+  const note = $('#bc-note-' + teamId).value.trim();
+  const body = { team_id: teamId, criterion, note };
+  if (stars !== '') body.stars = stars;
+  if (unitsEl.style.display !== 'none') {
+    const u = unitsEl.value.trim();
+    if (u === '' && stars === '') return toast('Enter a platform count');
+    if (u !== '') body.units = u;
+  }
+  try {
+    await api('/api/admin/bonus', 'POST', body);
+    toast('Bonus saved'); renderBonusManager();
+  } catch (e) { toast(e.message || 'Failed'); }
+}
+async function removeBonus(teamId, criterion) {
+  await api('/api/admin/bonus', 'DELETE', { team_id: teamId, criterion });
+  toast('Bonus removed'); renderBonusManager();
 }
 async function saveTeam(id) {
   const name = $('#tm-' + id).value.trim();

@@ -330,3 +330,36 @@ tbody tr:hover{background:var(--border-soft)}
 .rev-line .ok{color:var(--success)}
 .rev-line .bad{color:var(--fail)}
 .rev-line .sub{color:var(--muted)}
+
+/* Review-queue action buttons — wrap with even spacing instead of overflowing */
+.act-btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.act-btns .btn{flex:0 0 auto}
+.act-btns .btn.block{flex:1 1 100%}
+
+/* ===================================================================
+   Bonus points manager (Organizer)
+   =================================================================== */
+.bonus-team{margin-bottom:14px}
+.bonus-team-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+.bonus-total{font-size:13px;color:var(--muted)}
+.bonus-total b{color:var(--success)}
+.bonus-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.bonus-chip{
+  display:inline-flex;align-items:center;gap:8px;
+  background:var(--success-tint);border:1px solid oklch(0.88 0.05 145);
+  color:var(--ink-soft);border-radius:999px;padding:5px 6px 5px 12px;font-size:13px;font-weight:600;
+}
+.bonus-chip b{color:var(--success)}
+.bonus-x{
+  border:none;background:oklch(0.90 0.04 145);color:var(--ink-soft);
+  width:20px;height:20px;border-radius:50%;font-size:15px;line-height:1;
+  display:inline-flex;align-items:center;justify-content:center;
+}
+.bonus-x:hover{background:var(--fail);color:#fff}
+.bonus-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.bonus-form select,.bonus-form input{
+  border:1px solid var(--border);border-radius:2px;padding:8px 10px;font-family:inherit;font-size:14px;background:var(--paper-pure);
+}
+.bonus-form select{min-width:180px}
+.bonus-form input[type=number]{width:120px}
+.bonus-form input[type=text]{flex:1 1 160px;min-width:140px}

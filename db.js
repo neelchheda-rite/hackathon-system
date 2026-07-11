@@ -61,6 +61,24 @@ CREATE TABLE IF NOT EXISTS reviews (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Bonus points awarded to a team for meeting predefined criteria (e.g.
+-- multilingual support, N/4 platforms completed). Editable per team: one row
+-- per (team, criterion). `stars` is the weighted point value actually awarded;
+-- it defaults from the criterion's suggested weight but the organizer can tune it.
+CREATE TABLE IF NOT EXISTS bonuses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER NOT NULL,
+  criterion TEXT NOT NULL,         -- key from config.BONUS_CRITERIA, e.g. 'multilingual', 'platforms_4'
+  label TEXT NOT NULL,             -- human label snapshot at award time
+  stars REAL NOT NULL,             -- weighted bonus points awarded
+  note TEXT,                       -- optional organizer note
+  awarded_by INTEGER,              -- user id of the organizer who awarded it
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(team_id, criterion)       -- one award per criterion per team (update in place)
+);
+CREATE INDEX IF NOT EXISTS idx_bonuses_team ON bonuses (team_id);
+
 -- Per-user notifications (team leads are notified of status changes to their epics)
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

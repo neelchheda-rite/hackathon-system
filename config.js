@@ -64,4 +64,20 @@ for (let round = 1; round <= 4; round++) {
 //   ...
 // ];
 
-module.exports = { PORT, TEAMS, USERS, EPICS };
+// ---- Bonus criteria ----
+// Extra points a team can earn for meeting predefined goals, awarded team-wise
+// by the organizer. `weight` is the default (suggested) star value that
+// pre-fills the award form; the organizer can override it per team.
+// Editable here (add/remove criteria freely) or the values just seed the UI.
+// Two kinds of criterion:
+//  - flat:  a fixed `weight` awarded when met (multilingual, a11y, ...).
+//  - scaled: a `perUnit` value times a count the organizer enters (1..maxUnits),
+//            e.g. platforms completed — 1,2,3 or 4 platforms → count × perUnit.
+const BONUS_CRITERIA = [
+  { key: 'multilingual',     label: 'Multilingual support',        type: 'flat',   weight: 5 },
+  { key: 'platforms',        label: 'Platforms completed (of 4)',  type: 'scaled', perUnit: 2, maxUnits: 4, unitLabel: 'platforms' },
+  { key: 'accessibility',    label: 'Accessibility (a11y) polish', type: 'flat',   weight: 3 },
+  { key: 'early_submission', label: 'Early submission',            type: 'flat',   weight: 2 },
+];
+
+module.exports = { PORT, TEAMS, USERS, EPICS, BONUS_CRITERIA };

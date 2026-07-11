@@ -325,6 +325,70 @@ app.get('/api/admin/audit', requireRole('admin'), (req, res) => {
   res.json(db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 500').all());
 });
 
+// ---------- BONUS POINTS (team-wise extra points for predefined criteria) ----------
+// The static list of criteria (with suggested default weights) any team can earn.
+app.get('/api/bonus-criteria', requireAuth, (req, res) => res.json(config.BONUS_CRITERIA));
+
+// All awarded bonuses, grouped by team_id, plus each team's bonus total.
+app.get('/api/bonuses', requireAuth, (req, res) => {
+  const rows = db.prepare(`
+    SELECT b.*, t.name AS team_name, u.name AS awarded_by_name
+    FROM bonuses b
+    JOIN teams t ON t.id = b.team_id
+    LEFT JOIN users u ON u.id = b.awarded_by
+    ORDER BY b.team_id, b.criterion`).all();
+  const byTeam = {};
+  const totals = {};
+  for (const r of rows) {
+    (byTeam[r.team_id] = byTeam[r.team_id] || []).push(r);
+    totals[r.team_id] = (totals[r.team_id] || 0) + r.stars;
+  }
+  res.json({ byTeam, totals });
+});
+
+// Award or update a team's bonus for a criterion (admin only). Upsert on
+// (team_id, criterion): awarding the same criterion again updates the stars/note.
+app.post('/api/admin/bonus', requireRole('admin'), (req, res) => {
+  const { team_id, criterion, stars, units, note } = req.body;
+  const crit = (config.BONUS_CRITERIA || []).find(c => c.key === criterion);
+  if (!team_id || !crit) return res.status(400).json({ error: 'team_id and a valid criterion are required' });
+  const team = db.prepare('SELECT name FROM teams WHERE id=?').get(team_id);
+  if (!team) return res.status(404).json({ error: 'No such team' });
+
+  // Resolve the point value. Priority: explicit stars override > scaled units*perUnit > flat weight.
+  let pts, label = crit.label;
+  if (stars != null && stars !== '') {
+    pts = Number(stars);
+  } else if (crit.type === 'scaled') {
+    const n = Math.round(Number(units));
+    if (!Number.isFinite(n) || n < 1 || n > (crit.maxUnits || Infinity))
+      return res.status(400).json({ error: `Enter 1–${crit.maxUnits} ${crit.unitLabel || 'units'}` });
+    pts = n * crit.perUnit;
+    label = `${n}/${crit.maxUnits} ${crit.unitLabel || 'units'} completed`;
+  } else {
+    pts = crit.weight;
+  }
+  if (!Number.isFinite(pts) || pts < 0) return res.status(400).json({ error: 'stars must be a non-negative number' });
+
+  db.prepare(`
+    INSERT INTO bonuses (team_id, criterion, label, stars, note, awarded_by)
+    VALUES (?,?,?,?,?,?)
+    ON CONFLICT(team_id, criterion) DO UPDATE SET
+      stars=excluded.stars, note=excluded.note, label=excluded.label,
+      awarded_by=excluded.awarded_by, updated_at=datetime('now')
+  `).run(team_id, criterion, label, pts, note || null, req.session.user.id);
+  audit(req, 'award_bonus', `${team.name}: ${label} = +${pts}★${note ? ' — ' + note : ''}`);
+  res.json({ ok: true });
+});
+
+// Remove a team's bonus for a criterion (admin only).
+app.delete('/api/admin/bonus', requireRole('admin'), (req, res) => {
+  const { team_id, criterion } = req.body;
+  const r = db.prepare('DELETE FROM bonuses WHERE team_id=? AND criterion=?').run(team_id, criterion);
+  audit(req, 'remove_bonus', `removed bonus "${criterion}" from team #${team_id}`);
+  res.json({ ok: true, removed: r.changes });
+});
+
 // ---------- LEADERBOARD ----------
 app.get('/api/leaderboard', requireRole('admin', 'ba', 'pr', 'ui', 'integration'), (req, res) => {
   const teams = db.prepare('SELECT * FROM teams ORDER BY name').all();
@@ -342,10 +406,13 @@ app.get('/api/leaderboard', requireRole('admin', 'ba', 'pr', 'ui', 'integration'
       else if (r.stage === 'pr') pr += s;
       else if (r.stage === 'ui') ui += s;
     }
-    const total = acceptance + pr + ui;
+    const reviewStars = acceptance + pr + ui;
+    // Team-wise bonus points (weighted criteria) added on top of review stars.
+    const bonus = db.prepare('SELECT COALESCE(SUM(stars),0) s FROM bonuses WHERE team_id=?').get(t.id).s;
+    const total = reviewStars + bonus;
     // Final score = average star across every rated review (acceptance + PR + UI).
     const ratedCount = rows.length;
-    const avg = ratedCount ? Math.round((total / ratedCount) * 10) / 10 : 0;
+    const avg = ratedCount ? Math.round((reviewStars / ratedCount) * 10) / 10 : 0;
     const round1 = n => Math.round(n * 10) / 10;
     const doneCount = db.prepare(`SELECT COUNT(*) c FROM assignments WHERE team_id=? AND status='done'`).get(t.id).c;
     const failCount = db.prepare(`
@@ -354,6 +421,7 @@ app.get('/api/leaderboard', requireRole('admin', 'ba', 'pr', 'ui', 'integration'
     return {
       team: t.name,
       acceptance_stars: round1(acceptance), pr_stars: round1(pr), ui_stars: round1(ui),
+      bonus_stars: round1(bonus),
       total: round1(total), avg_score: avg, ratings: ratedCount,
       epics_done: doneCount, rejections: failCount
     };

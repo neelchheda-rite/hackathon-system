@@ -122,10 +122,14 @@ async function renderNotifPanel(preItems) {
 }
 
 // ---- Pipeline meta ----
-const FLOW = ['picked', 'in_development', 'acceptance', 'pr_review', 'ui_review', 'integration', 'done'];
+// Overall lifecycle. The three review stages (acceptance/PR/UI) run in PARALLEL
+// once a PR is submitted — see stageChips() for per-stage state.
+const FLOW = ['picked', 'in_development', 'in_review', 'done'];
 const LABELS = {
-  picked: 'Chit Picked', in_development: 'In Development', acceptance: 'Acceptance Review',
-  pr_review: 'PR Review', ui_review: 'UI Review', integration: 'Integration Test', done: 'Done ✓'
+  picked: 'Chit Picked', in_development: 'In Development', in_review: 'In Review',
+  done: 'Done ✓',
+  // legacy overall values (kept so old data / audit still render)
+  acceptance: 'Acceptance Review', pr_review: 'PR Review', ui_review: 'UI Review'
 };
 function badge(s) { return `<span class="badge b-${s}">${LABELS[s] || s}</span>`; }
 function pipe(status) {
@@ -133,6 +137,22 @@ function pipe(status) {
   const isDone = status === 'done';
   return `<div class="pipe">${FLOW.slice(1).map((s, i) =>
     `<div class="step ${i + 1 <= idx ? (isDone ? 'done' : 'on') : ''}"></div>`).join('')}</div>`;
+}
+
+// The three parallel review stages, shown as independent chips on an assignment.
+const STAGE_META = [
+  { key: 'ba_status', label: 'Acceptance' },
+  { key: 'pr_status', label: 'PR' },
+  { key: 'ui_status', label: 'UI' },
+];
+function stageChip(label, st) {
+  // st: pending | open | passed | failed | rated
+  const text = { pending: '—', open: 'reviewing', passed: 'passed', failed: 'rejected', rated: 'rated' }[st] || st;
+  return `<span class="stage-chip s-${st}" title="${label}: ${text}"><b>${label}</b> ${text}</span>`;
+}
+function stageChips(x) {
+  // Only meaningful once review has started; before that everything is pending.
+  return `<div class="stage-chips">${STAGE_META.map(m => stageChip(m.label, x[m.key])).join('')}</div>`;
 }
 function starsRO(n) {
   return `<div class="stars ro">${[1, 2, 3, 4, 5].map(i => `<span class="${i <= n ? 'on' : ''}">★</span>`).join('')}</div>`;
@@ -204,7 +224,7 @@ function renderLogin() {
 // ========== SHELL ==========
 const TABS_BY_ROLE = {
   admin: ['dashboard', 'review', 'pipeline', 'admin', 'leaderboard', 'audit'],
-  lead: ['my-epics', 'pipeline', 'leaderboard'],
+  lead: ['my-epics', 'pipeline'],
   ba: ['review', 'pipeline', 'leaderboard'],
   pr: ['review', 'pipeline', 'leaderboard'],
   ui: ['review', 'pipeline', 'leaderboard'],
@@ -289,6 +309,7 @@ function renderPipeline(v) {
       <div class="sub">Round ${x.round} · ${x.epic_number || 'epic not assigned'} ${x.attempts > 1 ? `<span class="attempts">· attempt ${x.attempts}</span>` : ''}</div>
       <div><b>${x.epic_title || '—'}</b></div>
       ${pipe(x.status)}
+      ${(x.status === 'in_review' || x.status === 'done') ? stageChips(x) : ''}
       ${x.pr_link ? `<div class="sub">PR: <a href="${x.pr_link}" target="_blank">${x.pr_link}</a></div>` : ''}
     </div>`).join('')}</div>`;
 }
@@ -297,13 +318,13 @@ function renderPipeline(v) {
 async function renderLeaderboard(v) {
   const lb = await api('/api/leaderboard');
   v.innerHTML = `<div class="page-title">Leaderboard</div>
-    <div class="section-title">Aggregated stars across all epics</div>
-    <table><thead><tr><th>#</th><th>Team</th><th>UI ★</th><th>Integration ★</th>
-    <th>Total ★</th><th>Epics Done</th><th>Rejections</th></tr></thead><tbody>
+    <div class="section-title">Final average score across all reviews (Acceptance + PR + UI)</div>
+    <table><thead><tr><th>#</th><th>Team</th><th>Acceptance ★</th><th>PR ★</th><th>UI ★</th>
+    <th>Total ★</th><th>Avg score</th><th>Epics Done</th><th>Rejections</th></tr></thead><tbody>
     ${lb.map((r, i) => `<tr>
       <td><span class="rank ${i === 0 ? '' : 'low'}">${i + 1}</span></td><td><b>${r.team}</b></td>
-      <td style="color:var(--star)">${r.ui_stars}</td><td style="color:var(--star)">${r.integration_stars}</td>
-      <td class="big">${r.total}</td><td>${r.epics_done}</td>
+      <td style="color:var(--star)">${r.acceptance_stars}</td><td style="color:var(--star)">${r.pr_stars}</td><td style="color:var(--star)">${r.ui_stars}</td>
+      <td>${r.total}</td><td class="big" style="color:var(--star)">${r.avg_score}</td><td>${r.epics_done}</td>
       <td style="color:${r.rejections ? 'var(--fail)' : 'var(--muted)'}">${r.rejections}</td>
     </tr>`).join('')}</tbody></table>`;
 }
@@ -317,7 +338,7 @@ async function renderDashboard(v) {
 
   // --- KPI tiles ---
   const done = summary.byStatus.done || 0;
-  const inReview = REVIEW_STAGES.reduce((s, st) => s + (summary.byStatus[st] || 0), 0);
+  const inReview = summary.byStatus.in_review || 0;
   const inDev = summary.byStatus.in_development || 0;
   const totalStars = lb.reduce((s, r) => s + r.total, 0);
   const kpis = [
@@ -325,35 +346,41 @@ async function renderDashboard(v) {
     ['In review', inReview, ''], ['In development', inDev, ''], ['Total ★ awarded', totalStars, '']
   ];
 
-  // --- Pipeline-by-stage horizontal bars ---
-  const stageOrder = FLOW.slice(1); // skip 'picked'
-  const maxCount = Math.max(1, ...stageOrder.map(st => summary.byStatus[st] || 0));
-  const stageBars = stageOrder.map(st => {
-    const n = summary.byStatus[st] || 0;
-    const pct = Math.round((n / maxCount) * 100);
-    const fillCls = st === 'done' ? 'done' : (REVIEW_STAGES.includes(st) ? 'mid' : '');
+  // --- Parallel review-stage bars: how many epics are still being reviewed vs
+  //     cleared at each of the three independent gates. ---
+  const bs = summary.byStage || { acceptance: {}, pr: {}, ui: {} };
+  const stageDefs = [
+    ['Acceptance', bs.acceptance], ['PR review', bs.pr], ['UI review', bs.ui]
+  ];
+  const maxCount = Math.max(1, ...stageDefs.map(([, d]) => (d.open || 0) + (d.cleared || 0)));
+  const stageBars = stageDefs.map(([label, d]) => {
+    const open = d.open || 0, cleared = d.cleared || 0, total = open + cleared;
+    const pct = Math.round((total / maxCount) * 100);
+    const clearedPct = total ? Math.round((cleared / total) * 100) : 0;
     return `<div class="stage-bar">
-      <div class="lbl">${LABELS[st].replace(' ✓','')}</div>
-      <div class="track"><div class="fill ${fillCls}" style="width:${n ? pct : 0}%"></div></div>
-      <div class="cnt">${n}</div>
+      <div class="lbl">${label}</div>
+      <div class="track"><div class="fill mid" style="width:${total ? pct : 0}%">
+        <div class="fill done" style="width:${clearedPct}%"></div></div></div>
+      <div class="cnt">${cleared}/${total}</div>
     </div>`;
   }).join('');
 
-  // --- Per-round breakdown table ---
+  // --- Per-round breakdown table (overall lifecycle) ---
+  const lifecycle = ['in_development', 'in_review', 'done'];
   const rounds = Object.keys(summary.byRound).sort();
-  const roundTable = `<table><thead><tr><th>Round</th>${stageOrder.map(s => `<th>${LABELS[s]}</th>`).join('')}</tr></thead>
+  const roundTable = `<table><thead><tr><th>Round</th>${lifecycle.map(s => `<th>${LABELS[s]}</th>`).join('')}</tr></thead>
     <tbody>${rounds.map(rd => `<tr><td><b>Round ${rd}</b></td>${
-      stageOrder.map(s => `<td>${summary.byRound[rd][s] || 0}</td>`).join('')}</tr>`).join('')
-      || `<tr><td colspan="${stageOrder.length + 1}" class="empty">No epics yet.</td></tr>`}</tbody></table>`;
+      lifecycle.map(s => `<td>${summary.byRound[rd][s] || 0}</td>`).join('')}</tr>`).join('')
+      || `<tr><td colspan="${lifecycle.length + 1}" class="empty">No epics yet.</td></tr>`}</tbody></table>`;
 
   // --- Standings ---
-  const standings = `<table><thead><tr><th>#</th><th>Team</th><th>UI ★</th><th>Integration ★</th><th>Total ★</th><th>Done</th><th>Rejections</th><th></th></tr></thead>
+  const standings = `<table><thead><tr><th>#</th><th>Team</th><th>Acceptance ★</th><th>PR ★</th><th>UI ★</th><th>Total ★</th><th>Avg score</th><th>Done</th><th>Rejections</th><th></th></tr></thead>
     <tbody>${lb.map((r, i) => {
       const team = STATE.teams.find(t => t.name === r.team);
       return `<tr>
         <td><span class="rank ${i === 0 ? '' : 'low'}">${i + 1}</span></td><td><b>${r.team}</b></td>
-        <td style="color:var(--star)">${r.ui_stars}</td><td style="color:var(--star)">${r.integration_stars}</td>
-        <td class="big">${r.total}</td>
+        <td style="color:var(--star)">${r.acceptance_stars}</td><td style="color:var(--star)">${r.pr_stars}</td><td style="color:var(--star)">${r.ui_stars}</td>
+        <td>${r.total}</td><td class="big" style="color:var(--star)">${r.avg_score}</td>
         <td>${r.epics_done}</td>
         <td style="color:${r.rejections ? 'var(--fail)' : 'var(--muted)'}">${r.rejections}</td>
         <td>${team ? `<button class="btn sm ghost" onclick="openTeamReport(${team.id})">Report</button>` : ''}</td>
@@ -424,6 +451,21 @@ async function openTeamReport(teamId) {
 }
 
 // ========== TEAM LEAD: MY EPICS ==========
+// Which of this epic's parallel stages were rejected (need a resubmission).
+function leadFailedStages(x) {
+  const out = [];
+  if (x.ba_status === 'failed') out.push('Acceptance');
+  if (x.pr_status === 'failed') out.push('PR');
+  return out;
+}
+// Show the submit/resubmit form when in development, or when any stage was rejected.
+function leadNeedsSubmit(x) {
+  return x.status === 'in_development' || leadFailedStages(x).length > 0;
+}
+// Show the per-stage chips once the epic has entered (or passed through) review.
+function leadShowStages(x) {
+  return x.status === 'in_review' || x.status === 'done' || leadFailedStages(x).length > 0;
+}
 function renderMyEpics(v) {
   const mine = STATE.assignments.filter(x => x.team_id === ME.team_id);
   if (!mine.length) return v.innerHTML = `<div class="empty">No epics yet. Pick a chit and ask the organizer to register it.</div>`;
@@ -434,11 +476,13 @@ function renderMyEpics(v) {
       <div class="row" style="justify-content:space-between"><h3>${x.epic_title || x.epic_number || 'Epic pending'}</h3>${badge(x.status)}</div>
       <div class="sub">${x.epic_number ? x.epic_number + ' · ' : ''}Round ${x.round} ${x.attempts > 1 ? `<span class="attempts">· attempt ${x.attempts}</span>` : ''}</div>
       ${pipe(x.status)}
-      ${(x.status === 'in_development') ? `
-        <div class="field" style="margin-top:8px"><label>PR link</label><input id="pr-${x.id}" placeholder="https://github.com/..."></div>
-        <button class="btn ok" onclick="submitPR(${x.id})">Mark completed & submit PR</button>` : ''}
+      ${leadShowStages(x) ? stageChips(x) : ''}
+      ${leadNeedsSubmit(x) ? `
+        ${leadFailedStages(x).length ? `<div class="sub" style="color:var(--fail)">Rejected: ${leadFailedStages(x).join(', ')} — fix & resubmit. Only these stages will re-review.</div>` : ''}
+        <div class="field" style="margin-top:8px"><label>PR link</label><input id="pr-${x.id}" placeholder="https://github.com/..." value="${(x.pr_link || '').replace(/"/g,'&quot;')}"></div>
+        <button class="btn ok" onclick="submitPR(${x.id})">${x.status === 'in_development' && x.attempts === 1 ? 'Mark completed & submit PR' : 'Resubmit PR'}</button>` : ''}
       ${x.status === 'picked' ? `<div class="sub">⏳ Waiting for organizer to assign your epic number.</div>` : ''}
-      ${x.pr_link ? `<div class="sub">PR: <a href="${x.pr_link}" target="_blank">link</a></div>` : ''}
+      ${x.pr_link && !leadNeedsSubmit(x) ? `<div class="sub">PR: <a href="${x.pr_link}" target="_blank">link</a></div>` : ''}
     </div>`).join('')}</div>`;
 }
 async function submitPR(id) {
@@ -449,63 +493,75 @@ async function submitPR(id) {
 }
 
 // ========== REVIEWERS: QUEUE ==========
-const ROLE_STAGE = { ba: 'acceptance', pr: 'pr_review', ui: 'ui_review', integration: 'integration' };
-// Which pipeline statuses are actionable review stages (in flow order).
-const REVIEW_STAGES = ['acceptance', 'pr_review', 'ui_review', 'integration'];
-const STAGE_TITLE = { acceptance: 'Acceptance Criteria', pr_review: 'PR Review', ui_review: 'UI Review', integration: 'Integration Testing' };
+// Each role owns one parallel stage; a stage is actionable when its column is 'open'.
+const ROLE_STAGE = { ba: 'acceptance', pr: 'pr_review', ui: 'ui_review' };
+const STAGE_COL = { acceptance: 'ba_status', pr_review: 'pr_status', ui_review: 'ui_status' };
+const REVIEW_STAGES = ['acceptance', 'pr_review', 'ui_review'];
+const STAGE_TITLE = { acceptance: 'Acceptance Criteria', pr_review: 'PR Review', ui_review: 'UI Review' };
+// Is the given review stage open for action on this assignment?
+function stageOpen(x, stage) { return x[STAGE_COL[stage]] === 'open'; }
 
 function renderReviewQueue(v) {
   const isAdmin = ME.role === 'admin';
-  // Admin sees every epic at any review stage; a reviewer sees only their stage.
+  // A reviewer sees every epic whose OWN stage is open — independent of the other
+  // stages, so BA/PR/UI all work in parallel. Admin sees anything with any open stage.
+  const myStage = ROLE_STAGE[ME.role];
   const queue = STATE.assignments.filter(x =>
-    isAdmin ? REVIEW_STAGES.includes(x.status) : x.status === ROLE_STAGE[ME.role]);
-  const heading = isAdmin
-    ? `All epics in review`
-    : STAGE_TITLE[ROLE_STAGE[ME.role]];
+    isAdmin ? REVIEW_STAGES.some(s => stageOpen(x, s)) : stageOpen(x, myStage));
+  const heading = isAdmin ? `All epics in review` : STAGE_TITLE[myStage];
   v.innerHTML = `<div class="page-title">${heading}</div>
     <div class="section-title">${queue.length} item${queue.length === 1 ? '' : 's'} in the queue</div>` +
-    (isAdmin ? `<div class="sub" style="margin-bottom:12px;color:var(--ink-soft)">As organizer you can act on any stage on behalf of the assigned reviewer.</div>` : '') +
+    (isAdmin ? `<div class="sub" style="margin-bottom:12px;color:var(--ink-soft)">As organizer you can act on any open stage on behalf of the assigned reviewer.</div>`
+             : `<div class="sub" style="margin-bottom:12px;color:var(--ink-soft)">All review stages run in parallel — you can review as soon as the PR is submitted, regardless of the other stages.</div>`) +
     (queue.length ? `<div class="grid">${queue.map((x, i) => `
       <div class="card fade-up" style="animation-delay:${Math.min(i, 8) * 80}ms">
         <div class="row" style="justify-content:space-between"><h3>${x.epic_number}</h3>${badge(x.status)}</div>
         <div class="sub">${x.team_name} · Round ${x.round} ${x.attempts > 1 ? `<span class="attempts">· attempt ${x.attempts}</span>` : ''}</div>
         <div><b>${x.epic_title}</b></div>
         <div class="sub">${x.epic_desc || ''}</div>
+        ${stageChips(x)}
         ${x.pr_link ? `<div class="sub">PR: <a href="${x.pr_link}" target="_blank">open PR</a></div>` : ''}
-        <button class="btn" onclick="openReview(${x.id})">Review this epic</button>
+        ${isAdmin
+          ? REVIEW_STAGES.filter(s => stageOpen(x, s)).map(s =>
+              `<button class="btn sm" onclick="openReview(${x.id},'${s}')">Review: ${STAGE_TITLE[s]}</button>`).join(' ')
+          : `<button class="btn" onclick="openReview(${x.id},'${myStage}')">Review this epic</button>`}
       </div>`).join('')}</div>`
       : `<div class="empty">🎉 Nothing in the queue right now.</div>`);
 }
 
-function openReview(id) {
+function openReview(id, stage) {
   const x = STATE.assignments.find(a => a.id === id);
   const bg = document.createElement('div'); bg.className = 'modal-bg';
-  // Decide the review UI from the epic's CURRENT stage, so admin can act on any stage.
-  const stage = x.status;
+  // The stage to review is passed explicitly (a reviewer's own stage, or the one
+  // an admin clicked) — stages are independent, so we don't derive it from status.
+  if (!stage) stage = ROLE_STAGE[ME.role];
   let inner = '';
-  if (stage === 'acceptance' || stage === 'pr_review') {
+  if (stage === 'acceptance') {
     inner = `
+      <div class="field"><label>Acceptance rating</label>${starPicker('acceptance')}</div>
       <div class="field"><label>Comment (required if rejecting)</label><textarea id="cmt" rows="3"></textarea></div>
       <div class="row">
-        <button class="btn ok" onclick="doPassFail(${id},'pass')">Pass</button>
-        <button class="btn bad" onclick="doPassFail(${id},'fail')">Reject</button>
+        <button class="btn ok" onclick="doPassFail(${id},'pass','acceptance')">Pass</button>
+        <button class="btn bad" onclick="doPassFail(${id},'fail','acceptance')">Reject</button>
       </div>
-      <p class="sub" style="margin-top:12px">Reject → epic returns to development (attempt +1) and must re-do from acceptance.</p>`;
+      <p class="sub" style="margin-top:12px">Reject → only the Acceptance stage reopens; the team fixes & resubmits. Other stages keep their results.</p>`;
+  } else if (stage === 'pr_review') {
+    inner = `
+      <div class="field"><label>PR rating</label>${starPicker('pr')}</div>
+      <div class="field"><label>Comment (required if rejecting)</label><textarea id="cmt" rows="3"></textarea></div>
+      <div class="row">
+        <button class="btn ok" onclick="doPassFail(${id},'pass','pr_review')">Pass</button>
+        <button class="btn bad" onclick="doPassFail(${id},'fail','pr_review')">Reject</button>
+      </div>
+      <p class="sub" style="margin-top:12px">Reject → only the PR stage reopens; the team fixes & resubmits. Other stages keep their results.</p>`;
   } else if (stage === 'ui_review') {
     inner = `
       <div class="field"><label>Design rating</label>${starPicker('ui')}</div>
       <div class="field"><label>Comment</label><textarea id="cmt" rows="2"></textarea></div>
-      <button class="btn ok" onclick="doUI(${id})">Submit rating & merge branch</button>
-      <p class="sub" style="margin-top:8px">UI never fails — 0 stars allowed. Branch merges after rating.</p>`;
-  } else if (stage === 'integration') {
-    const plats = ['windows', 'web', 'android', 'ios', 'backend'];
-    inner = `<div class="plat-grid">${plats.map(p =>
-      `<div style="text-transform:capitalize;font-weight:600">${p}</div>${starPicker(p)}`).join('')}</div>
-      <div class="field"><label>Comment</label><textarea id="cmt" rows="2"></textarea></div>
-      <button class="btn ok" onclick="doIntegration(${id})">Submit & complete</button>
-      <p class="sub" style="margin-top:8px">0 stars = broken platform. Never blocks the epic.</p>`;
+      <button class="btn ok" onclick="doUI(${id})">Submit rating</button>
+      <p class="sub" style="margin-top:8px">UI never fails — 0 stars allowed. The epic is marked Done once Acceptance, PR and UI have all cleared.</p>`;
   } else {
-    inner = `<p class="sub">This epic is not at a review stage right now.</p>`;
+    inner = `<p class="sub">This stage is not open for review right now.</p>`;
   }
   bg.innerHTML = `<div class="modal">
     <h3>${x.epic_number} — ${x.epic_title}</h3>
@@ -531,12 +587,14 @@ function setStar(key, n) {
   });
 }
 
-async function doPassFail(id, outcome) {
+async function doPassFail(id, outcome, stage) {
   const comment = $('#cmt').value.trim();
   if (outcome === 'fail' && !comment) return toast('Add a reason for rejection');
-  const x = STATE.assignments.find(a => a.id === id);
-  const ep = x && x.status === 'acceptance' ? 'acceptance' : 'pr';
-  await api('/api/review/' + ep, 'POST', { assignment_id: id, outcome, comment });
+  const ep = stage === 'acceptance' ? 'acceptance' : 'pr';
+  const payload = { assignment_id: id, outcome, comment };
+  if (ep === 'acceptance') payload.stars = PICK.acceptance || 0;
+  if (ep === 'pr') payload.stars = PICK.pr || 0;
+  await api('/api/review/' + ep, 'POST', payload);
   // Stamp-style badge presses in before the modal closes.
   const modal = document.querySelector('.modal');
   if (modal) modal.innerHTML = `<div style="text-align:center;padding:26px 0">
@@ -549,12 +607,13 @@ async function doPassFail(id, outcome) {
 }
 async function doUI(id) {
   await api('/api/review/ui', 'POST', { assignment_id: id, stars: PICK.ui, comment: $('#cmt').value.trim() });
-  document.querySelector('.modal-bg').remove(); toast('Rated & merged ✓'); await loadState(); renderView();
-}
-async function doIntegration(id) {
-  const platform_stars = { windows: PICK.windows, web: PICK.web, android: PICK.android, ios: PICK.ios, backend: PICK.backend };
-  await api('/api/review/integration', 'POST', { assignment_id: id, platform_stars, comment: $('#cmt').value.trim() });
-  document.querySelector('.modal-bg').remove(); confetti(); toast('Integration recorded — epic done 🎉'); await loadState(); renderView();
+  document.querySelector('.modal-bg').remove();
+  await loadState();
+  // Confetti only when the UI rating actually completed the epic (all stages cleared).
+  const x = STATE.assignments.find(a => a.id === id);
+  if (x && x.status === 'done') { confetti(); toast('Rated — all stages cleared, epic done 🎉'); }
+  else toast('UI rated ✓ (awaiting other stages)');
+  renderView();
 }
 
 // ========== ADMIN / ORGANIZER ==========

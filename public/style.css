@@ -176,7 +176,7 @@ select{padding-right:0}
 }
 .b-picked{color:var(--muted)}
 .b-in_development{color:oklch(0.60 0.10 45);border-color:oklch(0.82 0.08 45)}
-.b-acceptance,.b-pr_review,.b-ui_review,.b-integration{
+.b-acceptance,.b-pr_review,.b-ui_review,.b-integration,.b-in_review{
   color:var(--accent);border-color:oklch(0.80 0.09 45);
 }
 .b-merged,.b-done{color:var(--success);border-color:oklch(0.82 0.06 145);background:var(--success-tint)}
@@ -194,10 +194,24 @@ select{padding-right:0}
 .stage-bar{display:flex;align-items:center;gap:12px;font-size:13px}
 .stage-bar .lbl{width:110px;color:var(--ink-soft);flex-shrink:0}
 .stage-bar .track{flex:1;height:8px;background:var(--border-soft);border-radius:99px;overflow:hidden}
-.stage-bar .fill{height:100%;border-radius:99px;background:var(--accent-soft);transition:width .8s cubic-bezier(.22,1,.36,1)}
+.stage-bar .fill{position:relative;height:100%;border-radius:99px;background:var(--accent-soft);transition:width .8s cubic-bezier(.22,1,.36,1)}
 .stage-bar .fill.mid{background:var(--accent)}
+/* Cleared portion overlays the left of the (open+cleared) bar. */
+.stage-bar .fill.mid > .fill.done{position:absolute;left:0;top:0;height:100%;background:var(--success)}
 .stage-bar .fill.done{background:var(--success)}
-.stage-bar .cnt{width:34px;text-align:right;font-weight:700;color:var(--ink)}
+.stage-bar .cnt{width:44px;text-align:right;font-weight:700;color:var(--ink)}
+
+/* Per-stage parallel-review chips (on cards) */
+.stage-chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.stage-chip{
+  display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:99px;
+  font-size:11px;border:1px solid var(--border);color:var(--ink-soft);background:var(--paper-pure);
+}
+.stage-chip b{font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-size:10px}
+.stage-chip.s-pending{opacity:.55}
+.stage-chip.s-open{color:var(--accent);border-color:oklch(0.80 0.09 45);background:var(--accent-soft)}
+.stage-chip.s-passed,.stage-chip.s-rated{color:var(--success);border-color:oklch(0.82 0.06 145);background:var(--success-tint)}
+.stage-chip.s-failed{color:var(--fail);border-color:oklch(0.82 0.09 25)}
 
 /* ===================================================================
    Stars

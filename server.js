@@ -17,13 +17,29 @@ app.use(session({
 }));
 
 // ---- Pipeline definition ----
-// status flow. "attempts" increments on every fail-reset back to development.
-const STAGE_OF_STATUS = {
-  acceptance: 'acceptance',
-  pr_review: 'pr',
-  ui_review: 'ui',
-  integration: 'integration'
-};
+// Overall lifecycle: picked -> in_development -> in_review -> done.
+// Once a PR is submitted the three review stages (acceptance/BA, PR, UI) run IN
+// PARALLEL, each tracked by its own column: ba_status, pr_status, ui_status.
+// A reject only fails that one stage; the team resubmits and only failed stages
+// reopen. The epic is Done once ba=passed, pr=passed and ui=rated.
+
+// Recompute an assignment's overall `status` from its three parallel stages and
+// persist it. Returns the new overall status.
+function recomputeStatus(assignmentId) {
+  const a = db.prepare('SELECT ba_status,pr_status,ui_status,status FROM assignments WHERE id=?').get(assignmentId);
+  if (!a) return null;
+  let status;
+  if (a.ba_status === 'passed' && a.pr_status === 'passed' && a.ui_status === 'rated') {
+    status = 'done';
+  } else if (a.ba_status === 'pending' && a.pr_status === 'pending' && a.ui_status === 'pending') {
+    // No stage has opened yet — either awaiting the epic assignment or in development.
+    status = a.status === 'picked' ? 'picked' : 'in_development';
+  } else {
+    status = 'in_review';
+  }
+  db.prepare('UPDATE assignments SET status=? WHERE id=?').run(status, assignmentId);
+  return status;
+}
 
 // ---- Audit logging: records EVERY action, including logins ----
 const _audit = db.prepare(
@@ -195,8 +211,14 @@ app.post('/api/lead/submit-pr', requireRole('lead'), (req, res) => {
   const { assignment_id, pr_link } = req.body;
   const a = db.prepare('SELECT * FROM assignments WHERE id=?').get(assignment_id);
   if (!a || a.team_id !== req.session.user.team_id) return res.status(403).json({ error: 'Not your assignment' });
-  db.prepare('UPDATE assignments SET pr_link=?, status=? WHERE id=?')
-    .run(pr_link, 'acceptance', assignment_id);
+  // Open every review stage that isn't already passed/rated. A resubmission after a
+  // partial reject reopens only the failed stages; stages that already passed stay put.
+  const ba = a.ba_status === 'passed' ? 'passed' : 'open';
+  const pr = a.pr_status === 'passed' ? 'passed' : 'open';
+  const ui = a.ui_status === 'rated' ? 'rated' : 'open';
+  db.prepare('UPDATE assignments SET pr_link=?, ba_status=?, pr_status=?, ui_status=? WHERE id=?')
+    .run(pr_link, ba, pr, ui, assignment_id);
+  recomputeStatus(assignment_id);
   audit(req, 'submit_pr', `submitted PR for assignment #${assignment_id} (attempt ${a.attempts}): ${pr_link}`);
   res.json({ ok: true });
 });
@@ -204,82 +226,75 @@ app.post('/api/lead/submit-pr', requireRole('lead'), (req, res) => {
 // ---------- REVIEWERS ----------
 // Acceptance (BA) — pass/fail
 app.post('/api/review/acceptance', requireRole('ba', 'admin'), (req, res) => {
-  const { assignment_id, outcome, comment } = req.body; // pass|fail
+  const { assignment_id, outcome, comment, stars } = req.body; // pass|fail + 0-5 stars
   const a = db.prepare('SELECT * FROM assignments WHERE id=?').get(assignment_id);
-  if (!a || a.status !== 'acceptance') return res.status(400).json({ error: 'Not at acceptance stage' });
-  db.prepare(`INSERT INTO reviews (assignment_id,stage,reviewer_id,outcome,comment,attempt)
-              VALUES (?,?,?,?,?,?)`)
-    .run(assignment_id, 'acceptance', req.session.user.id, outcome, comment, a.attempts);
+  if (!a || a.ba_status !== 'open') return res.status(400).json({ error: 'Acceptance stage is not open for review' });
+  db.prepare(`INSERT INTO reviews (assignment_id,stage,reviewer_id,outcome,stars,comment,attempt)
+              VALUES (?,?,?,?,?,?,?)`)
+    .run(assignment_id, 'acceptance', req.session.user.id, outcome, stars || 0, comment, a.attempts);
   if (outcome === 'pass') {
-    db.prepare('UPDATE assignments SET status=? WHERE id=?').run('pr_review', assignment_id);
+    db.prepare('UPDATE assignments SET ba_status=? WHERE id=?').run('passed', assignment_id);
   } else {
-    db.prepare('UPDATE assignments SET status=?, attempts=attempts+1 WHERE id=?').run('in_development', assignment_id);
+    // Only this stage fails; other stages keep their results. Bump attempts so the
+    // team knows a resubmission is needed for the failed stage(s).
+    db.prepare('UPDATE assignments SET ba_status=?, attempts=attempts+1 WHERE id=?').run('failed', assignment_id);
   }
-  audit(req, 'review_acceptance', `${outcome.toUpperCase()} acceptance for assignment #${assignment_id}${comment ? ' — ' + comment : ''}`);
+  recomputeStatus(assignment_id);
+  audit(req, 'review_acceptance', `${outcome.toUpperCase()} acceptance (${stars || 0}★) for assignment #${assignment_id}${comment ? ' — ' + comment : ''}`);
   if (outcome === 'pass') {
     notifyTeamLead(assignment_id, 'acceptance_pass',
-      `${assignmentLabel(assignment_id)} passed Acceptance — now in PR review.`);
+      `${assignmentLabel(assignment_id)} passed Acceptance review.`);
   } else {
     notifyTeamLead(assignment_id, 'acceptance_fail',
-      `${assignmentLabel(assignment_id)} was rejected at Acceptance — back to development. Reason: ${comment}`);
+      `${assignmentLabel(assignment_id)} was rejected at Acceptance — fix & resubmit. Reason: ${comment}`);
   }
   res.json({ ok: true });
 });
 
-// PR review — pass/fail (fail = full reset to development, must redo acceptance)
+// PR review — pass/fail. A fail only fails the PR stage; other stages are unaffected.
 app.post('/api/review/pr', requireRole('pr', 'admin'), (req, res) => {
-  const { assignment_id, outcome, comment } = req.body;
+  const { assignment_id, outcome, comment, stars } = req.body;
   const a = db.prepare('SELECT * FROM assignments WHERE id=?').get(assignment_id);
-  if (!a || a.status !== 'pr_review') return res.status(400).json({ error: 'Not at PR stage' });
-  db.prepare(`INSERT INTO reviews (assignment_id,stage,reviewer_id,outcome,comment,attempt)
-              VALUES (?,?,?,?,?,?)`)
-    .run(assignment_id, 'pr', req.session.user.id, outcome, comment, a.attempts);
+  if (!a || a.pr_status !== 'open') return res.status(400).json({ error: 'PR stage is not open for review' });
+  db.prepare(`INSERT INTO reviews (assignment_id,stage,reviewer_id,outcome,stars,comment,attempt)
+              VALUES (?,?,?,?,?,?,?)`)
+    .run(assignment_id, 'pr', req.session.user.id, outcome, stars || 0, comment, a.attempts);
   if (outcome === 'pass') {
-    db.prepare('UPDATE assignments SET status=? WHERE id=?').run('ui_review', assignment_id);
+    db.prepare('UPDATE assignments SET pr_status=? WHERE id=?').run('passed', assignment_id);
   } else {
-    db.prepare('UPDATE assignments SET status=?, attempts=attempts+1 WHERE id=?').run('in_development', assignment_id);
+    db.prepare('UPDATE assignments SET pr_status=?, attempts=attempts+1 WHERE id=?').run('failed', assignment_id);
   }
-  audit(req, 'review_pr', `${outcome.toUpperCase()} PR review for assignment #${assignment_id}${comment ? ' — ' + comment : ''}`);
+  recomputeStatus(assignment_id);
+  audit(req, 'review_pr', `${outcome.toUpperCase()} PR review (${stars || 0}★) for assignment #${assignment_id}${comment ? ' — ' + comment : ''}`);
   if (outcome === 'pass') {
     notifyTeamLead(assignment_id, 'pr_pass',
-      `${assignmentLabel(assignment_id)} passed PR review — now in UI review.`);
+      `${assignmentLabel(assignment_id)} passed PR review.`);
   } else {
     notifyTeamLead(assignment_id, 'pr_fail',
-      `${assignmentLabel(assignment_id)} was rejected at PR review — back to development. Reason: ${comment}`);
+      `${assignmentLabel(assignment_id)} was rejected at PR review — fix & resubmit. Reason: ${comment}`);
   }
   res.json({ ok: true });
 });
 
-// UI review — 0-5 stars, never fails; then branch merged
+// UI review — 0-5 stars, never fails. Marks the UI stage rated; the epic reaches
+// Done only once acceptance and PR have also passed (handled by recomputeStatus).
 app.post('/api/review/ui', requireRole('ui', 'admin'), (req, res) => {
   const { assignment_id, stars, comment } = req.body;
   const a = db.prepare('SELECT * FROM assignments WHERE id=?').get(assignment_id);
-  if (!a || a.status !== 'ui_review') return res.status(400).json({ error: 'Not at UI stage' });
+  if (!a || a.ui_status !== 'open') return res.status(400).json({ error: 'UI stage is not open for review' });
   db.prepare(`INSERT INTO reviews (assignment_id,stage,reviewer_id,outcome,stars,comment,attempt)
               VALUES (?,?,?,?,?,?,?)`)
     .run(assignment_id, 'ui', req.session.user.id, 'rated', stars, comment, a.attempts);
-  db.prepare('UPDATE assignments SET status=? WHERE id=?').run('integration', assignment_id);
-  audit(req, 'review_ui', `rated UI ${stars}★ for assignment #${assignment_id} & merged`);
-  notifyTeamLead(assignment_id, 'ui_rated',
-    `${assignmentLabel(assignment_id)} got ${stars}★ in UI review & merged — now in Integration testing.`);
-  res.json({ ok: true });
-});
-
-// Integration — stars per platform, never blocks; then done
-app.post('/api/review/integration', requireRole('integration', 'admin'), (req, res) => {
-  const { assignment_id, platform_stars, comment } = req.body; // {windows,web,android,ios,backend}
-  const a = db.prepare('SELECT * FROM assignments WHERE id=?').get(assignment_id);
-  if (!a || a.status !== 'integration') return res.status(400).json({ error: 'Not at integration stage' });
-  // Combine the per-platform stars into ONE overall stage rating (average, 0-5).
-  const vals = Object.values(platform_stars || {}).map(v => Number(v) || 0);
-  const avg = vals.length ? Math.round((vals.reduce((s, v) => s + v, 0) / vals.length) * 10) / 10 : 0;
-  db.prepare(`INSERT INTO reviews (assignment_id,stage,reviewer_id,outcome,stars,platform_stars,comment,attempt)
-              VALUES (?,?,?,?,?,?,?,?)`)
-    .run(assignment_id, 'integration', req.session.user.id, 'rated', avg, JSON.stringify(platform_stars), comment, a.attempts);
-  db.prepare('UPDATE assignments SET status=? WHERE id=?').run('done', assignment_id);
-  audit(req, 'review_integration', `integration for assignment #${assignment_id}: ${avg}★ (avg of ${JSON.stringify(platform_stars)})`);
-  notifyTeamLead(assignment_id, 'integration_done',
-    `${assignmentLabel(assignment_id)} finished Integration testing (${avg}★) — Done ✓`);
+  db.prepare('UPDATE assignments SET ui_status=? WHERE id=?').run('rated', assignment_id);
+  const overall = recomputeStatus(assignment_id);
+  audit(req, 'review_ui', `rated UI ${stars}★ for assignment #${assignment_id}${overall === 'done' ? ' — all stages passed, merged & done' : ''}`);
+  if (overall === 'done') {
+    notifyTeamLead(assignment_id, 'ui_rated',
+      `${assignmentLabel(assignment_id)} got ${stars}★ in UI review — all stages passed, merged & Done ✓`);
+  } else {
+    notifyTeamLead(assignment_id, 'ui_rated',
+      `${assignmentLabel(assignment_id)} got ${stars}★ in UI review (still awaiting other stages).`);
+  }
   res.json({ ok: true });
 });
 
@@ -311,26 +326,38 @@ app.get('/api/admin/audit', requireRole('admin'), (req, res) => {
 });
 
 // ---------- LEADERBOARD ----------
-app.get('/api/leaderboard', requireAuth, (req, res) => {
+app.get('/api/leaderboard', requireRole('admin', 'ba', 'pr', 'ui', 'integration'), (req, res) => {
   const teams = db.prepare('SELECT * FROM teams ORDER BY name').all();
   const out = teams.map(t => {
     const rows = db.prepare(`
-      SELECT r.stage, r.stars, r.platform_stars FROM reviews r
+      SELECT r.stage, r.stars, r.outcome FROM reviews r
       JOIN assignments a ON a.id = r.assignment_id
-      WHERE a.team_id=? AND r.outcome='rated'`).all(t.id);
-    let ui = 0, integ = 0;
+      WHERE a.team_id=? AND r.stars IS NOT NULL
+        AND (r.outcome='rated' OR r.outcome='pass')`).all(t.id);
+    // Per-stage star sums across all of the team's rated reviews.
+    let acceptance = 0, pr = 0, ui = 0;
     for (const r of rows) {
-      if (r.stage === 'ui') ui += r.stars || 0;
-      // Integration stage now stores one combined (average) star rating per review.
-      if (r.stage === 'integration') integ += r.stars || 0;
+      const s = r.stars || 0;
+      if (r.stage === 'acceptance') acceptance += s;
+      else if (r.stage === 'pr') pr += s;
+      else if (r.stage === 'ui') ui += s;
     }
-    integ = Math.round(integ * 10) / 10;
+    const total = acceptance + pr + ui;
+    // Final score = average star across every rated review (acceptance + PR + UI).
+    const ratedCount = rows.length;
+    const avg = ratedCount ? Math.round((total / ratedCount) * 10) / 10 : 0;
+    const round1 = n => Math.round(n * 10) / 10;
     const doneCount = db.prepare(`SELECT COUNT(*) c FROM assignments WHERE team_id=? AND status='done'`).get(t.id).c;
     const failCount = db.prepare(`
       SELECT COUNT(*) c FROM reviews r JOIN assignments a ON a.id=r.assignment_id
       WHERE a.team_id=? AND r.outcome='fail'`).get(t.id).c;
-    return { team: t.name, ui_stars: ui, integration_stars: integ, total: ui + integ, epics_done: doneCount, rejections: failCount };
-  }).sort((a, b) => b.total - a.total);
+    return {
+      team: t.name,
+      acceptance_stars: round1(acceptance), pr_stars: round1(pr), ui_stars: round1(ui),
+      total: round1(total), avg_score: avg, ratings: ratedCount,
+      epics_done: doneCount, rejections: failCount
+    };
+  }).sort((a, b) => b.avg_score - a.avg_score || b.total - a.total);
   res.json(out);
 });
 
@@ -346,7 +373,20 @@ app.get('/api/admin/pipeline-summary', requireRole('admin'), (req, res) => {
     byRound[r.round][r.status] = r.c;
   }
   const total = db.prepare('SELECT COUNT(*) c FROM assignments').get().c;
-  res.json({ byStatus, byRound, total });
+  // Per-stage progress across the three parallel review gates. "reviewing" = still
+  // open for that stage; "cleared" = passed (BA/PR) or rated (UI).
+  const stageRow = db.prepare(`
+    SELECT
+      SUM(ba_status='open')   AS ba_open,   SUM(ba_status='passed') AS ba_cleared, SUM(ba_status='failed') AS ba_failed,
+      SUM(pr_status='open')   AS pr_open,   SUM(pr_status='passed') AS pr_cleared, SUM(pr_status='failed') AS pr_failed,
+      SUM(ui_status='open')   AS ui_open,   SUM(ui_status='rated')  AS ui_cleared
+    FROM assignments`).get();
+  const byStage = {
+    acceptance: { open: stageRow.ba_open || 0, cleared: stageRow.ba_cleared || 0, failed: stageRow.ba_failed || 0 },
+    pr:         { open: stageRow.pr_open || 0, cleared: stageRow.pr_cleared || 0, failed: stageRow.pr_failed || 0 },
+    ui:         { open: stageRow.ui_open || 0, cleared: stageRow.ui_cleared || 0, failed: 0 },
+  };
+  res.json({ byStatus, byRound, byStage, total });
 });
 
 // Reviewer activity: per reviewer, counts of pass/fail/rated and total.

@@ -36,7 +36,12 @@ CREATE TABLE IF NOT EXISTS assignments (
   round INTEGER,                  -- nullable: unknown until an epic is assigned (round follows the epic)
   epic_id INTEGER,                -- assigned by org after chit pickup (nullable until assigned)
   status TEXT NOT NULL DEFAULT 'picked',
-  -- picked -> in_development -> ready_review -> acceptance -> pr_review -> ui_review -> merged -> integration -> done
+  -- Overall lifecycle: picked -> in_development -> in_review -> done
+  -- Once a PR is submitted the three review stages run IN PARALLEL, each with its
+  -- own independent status below (a reject only affects that one stage).
+  ba_status TEXT NOT NULL DEFAULT 'pending',  -- pending | open | passed | failed
+  pr_status TEXT NOT NULL DEFAULT 'pending',  -- pending | open | passed | failed
+  ui_status TEXT NOT NULL DEFAULT 'pending',  -- pending | open | rated
   pr_link TEXT,
   attempts INTEGER NOT NULL DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
@@ -106,6 +111,45 @@ if (roundCol && roundCol.notnull === 1) {
     COMMIT;
     PRAGMA foreign_keys=on;
   `);
+}
+
+// ---- Migration: add per-stage parallel-review columns to assignments ----
+// The pipeline moved from sequential gates (one `status` marching through the
+// stages) to three independent stages that review in parallel. Older DBs lack
+// the ba_status/pr_status/ui_status columns; add them and backfill from the old
+// single status so in-flight epics keep their progress.
+{
+  const cols = db.prepare(`SELECT name FROM pragma_table_info('assignments')`).all().map(c => c.name);
+  const addStage = (col) => {
+    if (!cols.includes(col)) {
+      const def = col === 'ui_status' ? 'pending' : 'pending';
+      db.exec(`ALTER TABLE assignments ADD COLUMN ${col} TEXT NOT NULL DEFAULT '${def}'`);
+    }
+  };
+  const needMigrate = !cols.includes('ba_status');
+  addStage('ba_status'); addStage('pr_status'); addStage('ui_status');
+  if (needMigrate) {
+    // Backfill: translate each row's legacy single status into the three stages.
+    // Legacy order was acceptance -> pr_review -> ui_review -> done, so a row that
+    // reached (say) pr_review means acceptance already passed and pr is open.
+    const rows = db.prepare('SELECT id, status FROM assignments').all();
+    const upd = db.prepare('UPDATE assignments SET ba_status=?, pr_status=?, ui_status=? WHERE id=?');
+    const map = {
+      picked:         ['pending', 'pending', 'pending'],
+      in_development: ['pending', 'pending', 'pending'],
+      acceptance:     ['open',    'open',    'open'],
+      pr_review:      ['passed',  'open',    'open'],
+      ui_review:      ['passed',  'passed',  'open'],
+      done:           ['passed',  'passed',  'rated'],
+    };
+    for (const r of rows) {
+      const [ba, pr, ui] = map[r.status] || ['pending', 'pending', 'pending'];
+      upd.run(ba, pr, ui, r.id);
+    }
+    // Collapse the legacy per-stage statuses into the new overall lifecycle value.
+    db.exec(`UPDATE assignments SET status='in_review'
+             WHERE status IN ('acceptance','pr_review','ui_review')`);
+  }
 }
 
 // ---- Seed once from config.js ----
